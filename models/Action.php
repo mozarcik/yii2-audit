@@ -6,7 +6,12 @@
 
 namespace nineinchnick\audit\models;
 
+use netis\crud\db\ActiveQuery;
+use netis\crud\db\BlameableBehavior;
+use netis\crud\db\TimestampBehavior;
 use nineinchnick\audit\behaviors\TrackableBehavior;
+use Punic\Exception\NotImplemented;
+use yii\base\InvalidParamException;
 use yii\base\Model;
 use yii\data\SqlDataProvider;
 use yii\db\ActiveRecord;
@@ -153,6 +158,54 @@ class Action extends Model
     }
 
     /**
+     * Do not show internal attributes such as version, updated on, created on, created by etc
+     *
+     * @param $data
+     * @return array|mixed
+     */
+    public function getChangedFields($data)
+    {
+        if (trim($data['changed_fields']) === '') {
+            return [];
+        }
+        /** @var \netis\crud\db\ActiveRecord $model */
+        $model = new $data['modelClass'];
+        $skipAttributes = [];
+        /** @var BlameableBehavior $behavior */
+        $behavior = $model->getBehavior('blameable');
+        if ($behavior instanceof BlameableBehavior) {
+            if (trim($behavior->createdByAttribute) !== '') {
+                $skipAttributes[] = $behavior->createdByAttribute;
+            }
+            if (trim($behavior->updatedByAttribute) !== '') {
+                $skipAttributes[] = $behavior->updatedByAttribute;
+            }
+            if (trim($behavior->updateNotesAttribute) !== '') {
+                $skipAttributes[] = $behavior->updateNotesAttribute;
+            }
+        }
+
+        /** @var TimestampBehavior $behavior */
+        $behavior = $model->getBehavior('timestamp');
+        if ($behavior instanceof TimestampBehavior) {
+            if (trim($behavior->createdAtAttribute) !== '') {
+                $skipAttributes[] = $behavior->createdAtAttribute;
+            }
+            if (trim($behavior->updatedAtAttribute) !== '') {
+                $skipAttributes[] = $behavior->updatedAtAttribute;
+            }
+        }
+
+        if ($model->optimisticLock() !== null) {
+            $skipAttributes[] = $model->optimisticLock();
+        }
+
+        $result = \yii\helpers\Json::decode($data['changed_fields']);
+        $result = array_diff_key($result, array_flip($skipAttributes));
+        return $result;
+    }
+
+    /**
      * @param array $data      row data
      * @param array $tablesMap map of fully qualified table names to model class names
      * @throws \Exception
@@ -161,20 +214,22 @@ class Action extends Model
     {
         $this->data = $data;
 
+        if (!isset($tablesMap[$data['schema_name'] . '.' . $data['table_name']])) {
+            throw new \Exception('Cannot match a model class for table ' . $data['schema_name'] . '.'
+                . $data['table_name'] . ' in ' . print_r($tablesMap, true));
+        }
+
+        $data['modelClass'] = $tablesMap[$data['schema_name'] . '.' . $data['table_name']];
+
         $data['row_data'] = (array)json_decode($data['row_data']);
-        $data['changed_fields'] = (array)json_decode($data['changed_fields']);
+        $data['changed_fields'] = $this->getChangedFields($data);
         if ($data['request_date'] === null) {
             $data['request_date'] = $data['action_date'];
         }
         if ($data['request_url'] === null) {
             $data['request_url'] = '<abbr title="Command-line Interpreter">CLI</abbr>';
         }
-        if (isset($tablesMap[$data['schema_name'] . '.' . $data['table_name']])) {
-            $data['modelClass'] = $tablesMap[$data['schema_name'] . '.' . $data['table_name']];
-        } else {
-            throw new \Exception('Cannot match a model class for table ' . $data['schema_name'] . '.'
-                . $data['table_name'] . ' in ' . print_r($tablesMap, true));
-        }
+
 
         $this->setAttributes($data, false);
     }
@@ -203,8 +258,22 @@ class Action extends Model
         $conditions = [
             'AND',
             'a.statement_only = FALSE',
-            ['IN', '(a.relation_id::regclass)', array_keys($tablesMap['related'])],
         ];
+
+        $pk = $staticModel->primaryKey();
+        if (count($pk) === 1) {
+            /** @var ActiveQuery $query */
+            $query = $modelClass::find();
+            $authClass = $query->modelClass;
+            $checkedRelations = $staticModel->getCheckedRelations(\Yii::$app->user->id, $authClass . '.read');
+            $authQuery = $query
+                ->authorized($staticModel, $checkedRelations, \Yii::$app->user->getIdentity())
+                ->alias('t')
+                ->select($staticModel->primaryKey());
+            $pk  = reset($pk);
+            $conditions[] = ['IN', "(a.row_data->>'$pk')::int", $authQuery];
+        }
+
         $params = [];
         if ($model !== null) {
             $conditions[] = "a.row_data @> (:key)::jsonb";
@@ -221,6 +290,7 @@ class Action extends Model
                 'action_date' =>  'MAX(a.action_date)',
             ])
             ->from($behavior->auditTableName.' a')
+            ->leftJoin($behavior->changesetTableName.' c', 'c.id = a.changeset_id')
             ->where($conditions)
             ->andWhere("key_type = 'c'")
             ->groupBy('changeset_id')
@@ -232,9 +302,10 @@ class Action extends Model
                         'action_date' =>  'MAX(a.action_date)',
                     ])
                     ->from($behavior->auditTableName.' a')
+                    ->leftJoin($behavior->changesetTableName.' c', 'c.id = a.changeset_id')
                     ->where($conditions)
                     ->andWhere("key_type = 't'")
-                    ->groupBy('transaction_id'),
+                    ->groupBy('a.transaction_id'),
                 true
             )
             ->union(
@@ -245,6 +316,7 @@ class Action extends Model
                         'action_date' =>  'a.action_date',
                     ])
                     ->from($behavior->auditTableName.' a')
+                    ->leftJoin($behavior->changesetTableName.' c', 'c.id = a.changeset_id')
                     ->where($conditions)
                     ->andWhere("key_type = 'a'"),
                 true

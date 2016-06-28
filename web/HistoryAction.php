@@ -6,8 +6,10 @@
 
 namespace nineinchnick\audit\web;
 
+use netis\shipments\models\Shipment;
 use nineinchnick\audit\models\Action;
 use nineinchnick\audit\models\ActionSearch;
+use Yii;
 use yii\base\Exception;
 use yii\base\Module;
 use yii\data\ActiveDataProvider;
@@ -55,6 +57,9 @@ class HistoryAction extends \yii\rest\Action
             call_user_func($this->checkAccess, $this->id, $model);
         }
         $searchModel = new ActionSearch();
+        $searchModel->setAttributes([
+            'model_classes' => $this->controller->searchModelClass,
+        ]);
         if ($searchModel->load(\Yii::$app->request->getQueryParams())) {
             $searchModel->validate();
         }

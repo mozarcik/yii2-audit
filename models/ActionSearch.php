@@ -8,6 +8,7 @@ namespace nineinchnick\audit\models;
 
 use Yii;
 use yii\base\Model;
+use yii\db\Expression;
 
 /**
  * Holds action search form data.
@@ -81,6 +82,7 @@ class ActionSearch extends Model
 
     public function getConditions($conditions = [], $params = [], $tablesMap = [])
     {
+        $conditions[] = 'c.user_id is not null';
         if ($this->request_date_from !== null) {
             $conditions[] = "a.action_date > :from";
             $params[':from'] = $this->request_date_from;
@@ -103,10 +105,13 @@ class ActionSearch extends Model
         }
         if ($this->model_classes !== null) {
             $ids = array_filter(array_map('trim', explode(',', $this->model_classes)));
-            $conditions = [
+            $tables = array_map(function ($t) {
+                return new Expression("('$t')::regclass");
+            }, array_keys(array_intersect($tablesMap, $ids)));
+            $conditions[] = [
                 'IN',
-                '(a.relation_id::regclass)',
-                array_keys(array_intersect($tablesMap, $ids)),
+                'a.relation_id',
+                $tables,
             ];
         }
         if ($this->action_types !== null) {

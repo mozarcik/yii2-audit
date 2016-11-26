@@ -82,7 +82,7 @@ class ActionSearch extends Model
 
     public function getConditions($conditions = [], $params = [], $tablesMap = [])
     {
-        $conditions[] = 'c.user_id is not null';
+//        $conditions[] = 'c.user_id is not null';
         if ($this->request_date_from !== null) {
             $conditions[] = "a.action_date > :from";
             $params[':from'] = $this->request_date_from;

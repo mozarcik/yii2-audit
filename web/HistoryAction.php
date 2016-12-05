@@ -6,6 +6,7 @@
 
 namespace nineinchnick\audit\web;
 
+use netis\crud\db\ActiveSearchInterface;
 use netis\shipments\models\Shipment;
 use nineinchnick\audit\models\Action;
 use nineinchnick\audit\models\ActionSearch;
@@ -58,7 +59,7 @@ class HistoryAction extends \yii\rest\Action
         }
         $searchModel = new ActionSearch();
         $searchModel->setAttributes([
-            'model_classes' => $this->controller->searchModelClass,
+            'model_classes' => $this->controller->modelClass,
         ]);
         if ($searchModel->load(\Yii::$app->request->getQueryParams())) {
             $searchModel->validate();
@@ -108,15 +109,39 @@ class HistoryAction extends \yii\rest\Action
         foreach ($relationNames as $relationName) {
             /** @var \yii\db\ActiveQuery $relation */
             $relation = $staticModel->getRelation($relationName);
-            /** @var \yii\db\ActiveRecord $relationClass */
-            $relationClass = $relation->modelClass;
-            $tablesMap[$modelClass::getDb()->quoteSql($relationClass::tableName())] = $relationClass;
+            if (($class = $this->getActiveRecordClass($relation->modelClass)) === null) {
+                continue;
+            }
+            $tablesMap[$modelClass::getDb()->quoteSql($class::tableName())] = $class;
         }
 
         return [
             'related' => $this->normalizeTablesMap($tablesMap),
             'all' => $this->normalizeTablesMap($this->getModulesTablesMap()),
         ];
+    }
+
+    /**
+     * @param \ReflectionClass|string $class
+     * @return null|\netis\crud\db\ActiveRecord
+     */
+    protected function getActiveRecordClass($class)
+    {
+        if (!$class instanceof \ReflectionClass) {
+            $class = new \ReflectionClass($class);
+        }
+
+        $name = $class->name;
+        if ($class->implementsInterface(ActiveSearchInterface::class)) {
+            $class = $class->getParentClass();
+            $name = $class->name;
+        }
+
+        if (!$class->isSubclassOf(\netis\crud\db\ActiveRecord::class) || trim($name::tableName()) === '') {
+            return null;
+        }
+
+        return $name;
     }
 
     private function getModulesTablesMap()
@@ -144,8 +169,9 @@ class HistoryAction extends \yii\rest\Action
         $result = [];
         /** @var \ReflectionClass $class */
         foreach ($iterator->type('yii\db\ActiveRecord') as $name => $class) {
-            /** @var \yii\db\ActiveRecord $name */
-            $name = $class->name;
+            if (($name = $this->getActiveRecordClass($class)) === null) {
+                continue;
+            }
             $result[$name::getDb()->quoteSql($name::tableName())] = $name;
         }
         if ($this->cacheDuration !== null) {
